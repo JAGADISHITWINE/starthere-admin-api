@@ -62,5 +62,6 @@ router.post(
 
 router.get('/revenue', analytics.getAllRevenueData)
 router.get('/bookingData', booking.getAllBookingData)
+router.get('/bookings/completion-stats',booking.updateCompletedBookings)
 
 module.exports = router;

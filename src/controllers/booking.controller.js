@@ -37,5 +37,56 @@ async function getAllBookingData(req, res) {
   }
 }
 
+// services/bookingStatusService.js
+async function updateCompletedBookings(req,res) {
+  const conn = await db.getConnection();
+  
+  try {
+    // Get bookings before update
+    const [beforeUpdate] = await conn.execute(`
+      SELECT b.id, b.booking_reference, b.customer_name, b.trek_name
+      FROM bookings b
+      INNER JOIN trek_batches tb ON b.batch_id = tb.id
+      WHERE b.booking_status = 'confirmed'
+        AND tb.end_date < NOW()
+        AND b.cancelled_at IS NULL
+    `);
 
-module.exports = { getAllBookingData }
+    // Update bookings
+    const [result] = await conn.execute(`
+      UPDATE bookings b
+      INNER JOIN trek_batches tb ON b.batch_id = tb.id
+      SET b.booking_status = 'completed',
+          b.updated_at = NOW()
+      WHERE b.booking_status = 'confirmed'
+        AND tb.end_date < NOW()
+        AND b.cancelled_at IS NULL
+    `);
+
+    if (result.affectedRows > 0) {
+
+      // Emit real-time update to all connected admins
+      if (global.io) {
+        beforeUpdate.forEach(booking => {
+          global.io.to('admin-room').emit('booking-completed', {
+            bookingId: booking.id,
+            bookingReference: booking.booking_reference,
+            customerName: booking.customer_name,
+            trekName: booking.trek_name,
+            completedAt: new Date()
+          });
+        });
+      }
+    }
+
+    conn.release();
+    return result.affectedRows;
+    
+  } catch (error) {
+    if (conn) conn.release();
+    throw error;
+  }
+}
+
+
+module.exports = { getAllBookingData, updateCompletedBookings }

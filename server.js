@@ -1,14 +1,36 @@
 const express = require('express');
+const app = express();
 const cors = require('cors');
 const authRoutes = require('./src/routes/common.routes'); 
 require('dotenv').config();
 const path = require('path');
 
+const http = require('http');
+const server = http.createServer(app);
 
-const app = express();
+const { Server } = require('socket.io');
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
 
-app.use(express.json()); // Middleware to parse JSON request bodies
-app.use(cors()); // Optional
+// expose io globally so other modules/controllers can emit events
+global.io = io;
+
+app.use(express.json());
+app.use(cors());
+
+io.on('connection', (socket) => {
+
+  socket.on('join-admin-room', () => {
+    socket.join('admin-room');
+  });
+
+  socket.on('disconnect', () => {
+  });
+});
 
 // Use auth routes
 app.use('/api/auth', authRoutes); 
@@ -23,7 +45,7 @@ app.use(
   express.static(path.join(__dirname, 'uploads'))
 );
 
-// Start the server
-const PORT = process.env.PORT;
-console.log(PORT)
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const PORT = process.env.PORT || 4001;
+server.listen(PORT, () => {
+  console.log(`Server + Socket.IO running on port ${PORT}`);
+});

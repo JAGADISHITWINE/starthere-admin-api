@@ -147,43 +147,91 @@ async function getAllTreks(req, res) {
         t.fitness_level,
         t.description,
         t.cover_image,
-        b.duration,
-        MIN(b.start_date) AS upcoming_date,
+        MIN(b.duration) AS duration,
+        MIN(b.start_date) AS earliest_start_date,
+        MAX(b.end_date) AS latest_end_date,
         MIN(b.price) AS starting_price,
-        SUM(CASE WHEN b.status = 'active' THEN b.available_slots ELSE 0 END) AS total_available_slots,
+        MAX(b.price) AS max_price,
+        SUM(b.available_slots) AS total_available_slots,
+        SUM(b.booked_slots) AS total_booked_slots,
+        SUM(b.available_slots - b.booked_slots) AS total_remaining_slots,
         COUNT(DISTINCT b.id) AS total_batches,
         COUNT(DISTINCT CASE WHEN b.status = 'active' THEN b.id END) AS active_batches,
+        COUNT(DISTINCT CASE WHEN b.status = 'inactive' THEN b.id END) AS inactive_batches,
+        COUNT(DISTINCT CASE WHEN b.status = 'cancelled' THEN b.id END) AS cancelled_batches,
+        COUNT(DISTINCT CASE WHEN b.status = 'completed' THEN b.id END) AS completed_batches,
         t.created_at,
         t.updated_at
       FROM treks t
-      LEFT JOIN trek_batches b 
-        ON b.trek_id = t.id
-        AND b.start_date >= CURDATE()
+      LEFT JOIN trek_batches b ON b.trek_id = t.id
       GROUP BY t.id, t.name, t.location, t.category, t.difficulty, 
-               t.fitness_level, t.description, t.cover_image, b.duration
+               t.fitness_level, t.description, t.cover_image, 
+               t.created_at, t.updated_at
       ORDER BY t.created_at DESC
     `);
 
-    // Get highlights count for each trek
+    // Get highlights and batch details for each trek
     for (const trek of rows) {
+      // Get highlights count
       const [[{ highlight_count }]] = await conn.query(
         "SELECT COUNT(*) as highlight_count FROM trek_highlights WHERE trek_id = ?",
         [trek.id],
       );
       trek.highlight_count = highlight_count;
 
-      // Format dates
-      trek.upcoming_date = trek.upcoming_date
-        ? new Date(trek.upcoming_date).toISOString().split("T")[0]
+      // ✅ Get all batch dates for this trek
+      const [batches] = await conn.query(
+        `SELECT 
+          id,
+          DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate,
+          DATE_FORMAT(end_date, '%Y-%m-%d') AS endDate,
+          status,
+          price,
+          available_slots,
+          booked_slots,
+          duration,
+          (available_slots - booked_slots) AS remainingSlots
+        FROM trek_batches 
+        WHERE trek_id = ?
+        ORDER BY start_date ASC`,
+        [trek.id]
+      );
+      trek.batches = batches;
+
+      // Format summary dates
+      trek.earliest_start_date = trek.earliest_start_date
+        ? new Date(trek.earliest_start_date).toISOString().split("T")[0]
+        : null;
+      
+      trek.latest_end_date = trek.latest_end_date
+        ? new Date(trek.latest_end_date).toISOString().split("T")[0]
         : null;
 
       // Add availability status
-      trek.has_available_slots = trek.total_available_slots > 0;
+      trek.has_available_slots = (trek.total_remaining_slots || 0) > 0;
+      trek.has_batches = (trek.total_batches || 0) > 0;
     }
+
+    // Get total trek count and active trek count
+    const [[totalCount]] = await conn.query(`
+      SELECT COUNT(DISTINCT t.id) AS total_trek_count
+      FROM treks t
+    `);
+
+    const [[activeCount]] = await conn.query(`
+      SELECT COUNT(DISTINCT t.id) AS active_trek_count
+      FROM treks t
+      JOIN trek_batches b ON b.trek_id = t.id
+      WHERE b.status = 'active'
+        AND b.start_date >= CURDATE()
+        AND (b.available_slots - b.booked_slots) > 0
+    `);
 
     res.status(200).json({
       success: true,
       count: rows.length,
+      totalTreks: totalCount.total_trek_count,
+      activeTrekCount: activeCount.active_trek_count,
       data: rows,
     });
   } catch (err) {
@@ -199,10 +247,48 @@ async function getAllTreks(req, res) {
 }
 
 async function getTrekById(req, res) {
-  const trekId = req.params.id;
+  const batchId = req.params.id;  // ✅ Accepting batch_id
   const conn = await db.getConnection();
 
   try {
+    // ✅ First, get the batch to find the trek_id
+    const [[batch]] = await conn.query(
+      `SELECT 
+        id AS batchId, 
+        trek_id AS trekId, 
+        start_date AS startDate, 
+        end_date AS endDate, 
+        available_slots AS availableSlots, 
+        booked_slots AS bookedSlots,
+        (available_slots - booked_slots) AS remainingSlots,
+        price, 
+        min_age AS minAge, 
+        max_age AS maxAge, 
+        min_participants AS minParticipants, 
+        max_participants AS maxParticipants, 
+        duration, 
+        status,
+        CASE 
+          WHEN status != 'active' THEN 'inactive'
+          WHEN (available_slots - booked_slots) <= 0 THEN 'sold-out'
+          WHEN (available_slots - booked_slots) <= 3 THEN 'last-seat'
+          WHEN (available_slots - booked_slots) <= 10 THEN 'selling-fast'
+          ELSE 'available'
+        END AS slotStatus
+      FROM trek_batches 
+      WHERE id = ?`,
+      [batchId]
+    );
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        message: 'Batch not found'
+      });
+    }
+
+    const trekId = batch.trekId;
+
     // Get basic trek info
     const [[trek]] = await conn.query("SELECT * FROM treks WHERE id = ?", [
       trekId,
@@ -243,73 +329,53 @@ async function getTrekById(req, res) {
     );
     trek.galleryImages = images.map((img) => img.image_url);
 
-    // Get batches
-    const [batches] = await conn.query(
-      "SELECT * FROM trek_batches WHERE trek_id = ?",
-      [trekId],
+    // ✅ Get inclusions for this batch - USING batch.batchId to be safe
+    const [inclusions] = await conn.query(
+      "SELECT inclusion FROM batch_inclusions WHERE batch_id = ? ORDER BY id",
+      [batch.batchId],
+    );
+    batch.inclusions = inclusions.map((i) => i.inclusion);
+    
+    // ✅ Get exclusions for this batch - USING batch.batchId to be safe
+    const [exclusions] = await conn.query(
+      "SELECT exclusion FROM batch_exclusions WHERE batch_id = ? ORDER BY id",
+      [batch.batchId],
+    );
+    batch.exclusions = exclusions.map((e) => e.exclusion);
+    
+    // ✅ Get itinerary days for this batch
+    const [days] = await conn.query(
+      "SELECT id, day_number AS dayNumber, title FROM itinerary_days WHERE batch_id = ? ORDER BY day_number",
+      [batch.batchId],
     );
 
-    // For each batch, get inclusions, exclusions, and itinerary
-    for (const batch of batches) {
-      // Get inclusions
-      const [inclusions] = await conn.query(
-        "SELECT inclusion FROM batch_inclusions WHERE batch_id = ?",
-        [batch.id],
+    // For each day, get activities
+    for (const day of days) {
+      const [activities] = await conn.query(
+        "SELECT activity_time AS activityTime, activity_text AS activityText FROM itinerary_activities WHERE day_id = ? ORDER BY activity_time",
+        [day.id],
       );
-      batch.inclusions = inclusions.map((i) => i.inclusion);
+      day.activities = activities;
 
-      // Get exclusions
-      const [exclusions] = await conn.query(
-        "SELECT exclusion FROM batch_exclusions WHERE batch_id = ?",
-        [batch.id],
-      );
-      batch.exclusions = exclusions.map((e) => e.exclusion);
-
-      // Get itinerary days
-      const [days] = await conn.query(
-        "SELECT * FROM itinerary_days WHERE batch_id = ? ORDER BY day_number",
-        [batch.id],
-      );
-
-      // For each day, get activities
-      for (const day of days) {
-        const [activities] = await conn.query(
-          "SELECT activity_time, activity_text FROM itinerary_activities WHERE day_id = ? ORDER BY activity_time",
-          [day.id],
-        );
-        day.activities = activities.map((a) => ({
-          activityTime: a.activity_time,
-          activityText: a.activity_text,
-        }));
-
-        // Remove internal id from response
-        delete day.id;
-        delete day.batch_id;
-        delete day.created_at;
-      }
-
-      batch.itineraryDays = days;
-
-      // Clean up batch object
-      delete batch.id;
-      delete batch.trek_id;
-      delete batch.created_at;
-      delete batch.updated_at;
+      // Remove internal id from response
+      delete day.id;
     }
 
-    trek.batches = batches;
+    batch.itineraryDays = days;
 
-    // Clean up trek object - keep id for reference
-    // delete trek.id;
+    // ✅ Attach only this batch to trek
+    trek.batch = batch;
+
+    const response = trek;
 
     // Send response
     res.status(200).json({
       success: true,
-      data: trek
+      data: response
     });
 
   } catch (err) {
-    console.error('Error fetching trek:', err);
+    console.error('Error fetching trek by batch:', err);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch trek',
@@ -319,6 +385,7 @@ async function getTrekById(req, res) {
     conn.release();
   }
 }
+
 
 async function getTrekByIdToUpdate(req, res) {
   const trekId = req.params.id;
