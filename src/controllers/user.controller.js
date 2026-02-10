@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { encrypt } = require("../service/cryptoHelper");
 
 async function getUsersData(req, res) {
     try {
@@ -26,10 +27,10 @@ async function getUsersData(req, res) {
                 u.phone_number;
                 `);
 
+        const encryptedResponse = encrypt(usersData);
         return res.status(200).json({
             success: true,
-            usersData,
-
+            data: encryptedResponse,
         });
 
     } catch (err) {

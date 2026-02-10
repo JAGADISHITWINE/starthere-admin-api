@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const loginModel = require("../models/User");
 const db = require("../config/db");
 require("dotenv").config();
+const { encrypt, decrypt } = require("../service/cryptoHelper");
 
 async function login(req, res) {
   try {
@@ -96,17 +97,21 @@ async function getDashboardData(req, res) {
       LIMIT 5
     `);
 
+      response = {
+      totalUsers: userCount.totalUsers,
+      totalactiveUsers: activeUserCount.totalactiveUsers,
+      totaltrekCount: trekCount.totaltrekCount,
+      totalbookingCount: bookingCount.totalbookingCount,
+      totalRevenue: revenue.totalRevenue,
+      recentBookings,
+    }
+      
+    const encryptedResponse = encrypt(response);
+
     /* -------- RESPONSE -------- */
     return res.status(200).json({
       success: true,
-      data: {
-        totalUsers: userCount.totalUsers,
-        totalactiveUsers: activeUserCount.totalactiveUsers,
-        totaltrekCount: trekCount.totaltrekCount,
-        totalbookingCount: bookingCount.totalbookingCount,
-        totalRevenue: revenue.totalRevenue,
-        recentBookings,
-      },
+      data: encryptedResponse,
     });
   } catch (err) {
     console.error("Dashboard error:", err);

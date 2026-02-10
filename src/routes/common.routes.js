@@ -63,5 +63,6 @@ router.post(
 router.get('/revenue', analytics.getAllRevenueData)
 router.get('/bookingData', booking.getAllBookingData)
 router.get('/bookings/completion-stats',booking.updateCompletedBookings)
+router.put('/batches/:batchId/complete', booking.updateBatchCompleted)
 
 module.exports = router;

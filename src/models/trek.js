@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { encrypt, decrypt } = require("../service/cryptoHelper");
 
 async function createTrek(trek, files) {
   const conn = await db.getConnection();
@@ -6,28 +7,22 @@ async function createTrek(trek, files) {
   try {
     // 🔁 Duplicate check
     const [[exists]] = await conn.query(
-      'SELECT id FROM treks WHERE name = ? AND location = ?',
+      `SELECT id FROM treks WHERE name = ? AND location = ?`,
       [trek.name, trek.location]
     );
 
     if (exists) {
-      throw new Error('DUPLICATE_TREK');
+      throw new Error("DUPLICATE_TREK");
     }
 
     await conn.beginTransaction();
 
-    // ✅ INSERT TREK
-    const [result] = await conn.query(
+    // 🏔️ Insert trek
+    const [trekResult] = await conn.query(
       `INSERT INTO treks (
-        name,
-        location,
-        category,
-        difficulty,
-        fitness_level,
-        description,
-        cover_image,
-        created_at,
-        updated_at
+        name, location, category, difficulty,
+        fitness_level, description, cover_image,
+        created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         trek.name,
@@ -36,141 +31,90 @@ async function createTrek(trek, files) {
         trek.difficulty,
         trek.fitnessLevel || null,
         trek.description || null,
-        files?.coverImage?.[0]?.path || files?.coverImage?.[0]?.filename || null
+        files.coverImage[0].path || files.coverImage[0].filename
       ]
     );
 
-    const trekId = result.insertId;
+    const trekId = trekResult.insertId;
 
-    // 🌟 Insert Highlights
-    if (Array.isArray(trek.highlights) && trek.highlights.length > 0) {
-      for (const highlight of trek.highlights.filter(Boolean)) {
+    // 🌟 Highlights
+    if (Array.isArray(trek.highlights)) {
+      for (const h of trek.highlights.filter(Boolean)) {
         await conn.query(
-          'INSERT INTO trek_highlights (trek_id, highlight) VALUES (?, ?)',
-          [trekId, highlight]
+          `INSERT INTO trek_highlights (trek_id, highlight) VALUES (?, ?)`,
+          [trekId, h]
         );
       }
     }
 
-    // 🎒 Insert Things to Carry
-    if (Array.isArray(trek.thingsToCarry) && trek.thingsToCarry.length > 0) {
-      for (let i = 0; i < trek.thingsToCarry.length; i++) {
-        const item = trek.thingsToCarry[i];
+    // 🎒 Things to carry
+    if (Array.isArray(trek.thingsToCarry)) {
+      trek.thingsToCarry.forEach(async (item, i) => {
         if (item) {
           await conn.query(
-            'INSERT INTO trek_things_to_carry (trek_id, item, display_order) VALUES (?, ?, ?)',
+            `INSERT INTO trek_things_to_carry (trek_id, item, display_order)
+             VALUES (?, ?, ?)`,
             [trekId, item, i + 1]
           );
         }
-      }
+      });
     }
 
-    // ⚠️ Insert Important Notes
-    if (Array.isArray(trek.importantNotes) && trek.importantNotes.length > 0) {
-      for (let i = 0; i < trek.importantNotes.length; i++) {
-        const note = trek.importantNotes[i];
+    // ⚠️ Important notes
+    if (Array.isArray(trek.importantNotes)) {
+      trek.importantNotes.forEach(async (note, i) => {
         if (note) {
           await conn.query(
-            'INSERT INTO trek_important_notes (trek_id, note, display_order) VALUES (?, ?, ?)',
+            `INSERT INTO trek_important_notes (trek_id, note, display_order)
+             VALUES (?, ?, ?)`,
             [trekId, note, i + 1]
           );
         }
-      }
+      });
     }
 
-    // 📦 Insert Batches with their inclusions, exclusions, and itinerary
-    if (Array.isArray(trek.batches) && trek.batches.length > 0) {
+    // 📦 Batches
+    if (Array.isArray(trek.batches)) {
       for (const batch of trek.batches) {
-        // Insert batch
+
+        if (!batch.startDate || !batch.endDate) {
+          throw new Error("INVALID_BATCH_DATES");
+        }
+
         const [batchResult] = await conn.query(
           `INSERT INTO trek_batches (
-            trek_id,
-            start_date,
-            end_date,
-            available_slots,
-            price,
-            min_age,
-            max_age,
-            min_participants,
-            max_participants,
-            duration,
-            status
+            trek_id, start_date, end_date,
+            available_slots, price,
+            min_age, max_age,
+            min_participants, max_participants,
+            duration, status
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             trekId,
             batch.startDate,
             batch.endDate,
-            batch.availableSlots,
-            batch.price,
+            batch.availableSlots || null,
+            batch.price || null,
             batch.minAge || null,
             batch.maxAge || null,
             batch.minParticipants || null,
             batch.maxParticipants || null,
             batch.duration || null,
-            batch.batchStatus || 'active'
+            batch.batchStatus || "active"
           ]
         );
 
         const batchId = batchResult.insertId;
 
-        // Insert batch inclusions (already an array, no need to parse)
-        if (Array.isArray(batch.inclusions) && batch.inclusions.length > 0) {
-          for (const inclusion of batch.inclusions.filter(Boolean)) {
-            await conn.query(
-              'INSERT INTO batch_inclusions (batch_id, inclusion) VALUES (?, ?)',
-              [batchId, inclusion]
-            );
-          }
-        }
-
-        // Insert batch exclusions (already an array, no need to parse)
-        if (Array.isArray(batch.exclusions) && batch.exclusions.length > 0) {
-          for (const exclusion of batch.exclusions.filter(Boolean)) {
-            await conn.query(
-              'INSERT INTO batch_exclusions (batch_id, exclusion) VALUES (?, ?)',
-              [batchId, exclusion]
-            );
-          }
-        }
-
-        // 🗺️ Insert Itinerary Days (already an array, no need to parse)
-        if (Array.isArray(batch.itineraryDays) && batch.itineraryDays.length > 0) {
-          for (const day of batch.itineraryDays) {
-            // Insert day
-            const [dayResult] = await conn.query(
-              `INSERT INTO itinerary_days (
-                batch_id,
-                day_number,
-                title
-              ) VALUES (?, ?, ?)`,
-              [batchId, day.dayNumber, day.title]
-            );
-
-            const dayId = dayResult.insertId;
-
-            // Insert activities for this day (already an array, no need to parse)
-            if (Array.isArray(day.activities) && day.activities.length > 0) {
-              for (const activity of day.activities) {
-                await conn.query(
-                  `INSERT INTO itinerary_activities (
-                    day_id,
-                    activity_time,
-                    activity_text
-                  ) VALUES (?, ?, ?)`,
-                  [dayId, activity.activityTime, activity.activityText]
-                );
-              }
-            }
-          }
-        }
+        await insertBatchNestedData(conn, batchId, batch);
       }
     }
 
-    // 🖼️ Insert Gallery Images
-    if (files?.gallery?.length) {
+    // 🖼️ Gallery
+    if (files.gallery?.length) {
       for (const img of files.gallery) {
         await conn.query(
-          'INSERT INTO trek_images (trek_id, image_url) VALUES (?, ?)',
+          `INSERT INTO trek_images (trek_id, image_url) VALUES (?, ?)`,
           [trekId, img.path || img.filename]
         );
       }
@@ -181,12 +125,12 @@ async function createTrek(trek, files) {
 
   } catch (err) {
     await conn.rollback();
-    console.error('Database error:', err);
     throw err;
   } finally {
     conn.release();
   }
 }
+
 
 async function updateTrek(trekId, trek, files) {
   const conn = await db.getConnection();

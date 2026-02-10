@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { encrypt, decrypt } = require("../service/cryptoHelper");
 
 async function getAllRevenueData(req, res) {
     try {
@@ -50,7 +51,7 @@ async function getAllRevenueData(req, res) {
             GROUP BY trek_name
             ORDER BY revenue DESC
             `);
-                const [rows] = await db.query(`
+        const [rows] = await db.query(`
         SELECT
             DATE_FORMAT(created_at, '%Y-%m') AS month,
             SUM(total_amount) AS revenue
@@ -71,19 +72,21 @@ async function getAllRevenueData(req, res) {
             const growth = ((current - previous) / previous) * 100;
             monthlyGrowth = `${growth >= 0 ? '+' : ''}${growth.toFixed(1)}%`;
         }
-
+        data = {
+            totalBooking: totalBooking.totalbookingCount,
+            totalRevenue: totalRevenue.totalRevenue,
+            averageBookingValue: averageBookingValue.averageBookingValue,
+            monthlyData,
+            trekRevenue,
+            monthlyGrowth
+        }
+        const encryptedResponse = encrypt(data);
 
         /* ---------------- FINAL RESPONSE ---------------- */
         return res.status(200).json({
             success: true,
-            data: {
-                totalBooking: totalBooking.totalbookingCount,
-                totalRevenue: totalRevenue.totalRevenue,
-                averageBookingValue: averageBookingValue.averageBookingValue,
-                monthlyData,
-                trekRevenue,
-                monthlyGrowth
-            },
+            data: encryptedResponse
+           ,
         });
     } catch (err) {
         console.error("Error fetching data:", err);

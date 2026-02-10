@@ -1,134 +1,186 @@
 const trekModel = require("../models/trek");
 const db = require("../config/db");
 const XLSX = require('xlsx');
+const { encrypt, decrypt } = require("../service/cryptoHelper");
 
 async function createTrek(req, res) {
-
-
   try {
-    if (!req.body) {
+    if (!req.body?.encryptedPayload) {
       return res.status(400).json({
         success: false,
-        message: "Missing trek data",
+        message: "Missing payload"
       });
     }
 
-    // Parse JSON fields from FormData
-    let highlights = [];
-    let batches = [];
-    let thingsToCarry = [];
-    let importantNotes = [];
-
-    // Safely parse JSON strings
+    let trek;
     try {
-      if (req.body.highlights) {
-        highlights = JSON.parse(req.body.highlights);
-      }
-    } catch (e) {
-      console.error("Error parsing highlights:", e);
+      trek = decrypt(req.body.encryptedPayload);
+    } catch {
       return res.status(400).json({
         success: false,
-        message: "Invalid highlights format",
+        message: "Invalid encrypted payload"
       });
     }
 
-    try {
-      if (req.body.batches) {
-        batches = JSON.parse(req.body.batches);
-      }
-    } catch (e) {
-      console.error("Error parsing batches:", e);
+    if (!trek.name || !trek.location || !trek.category || !trek.difficulty) {
       return res.status(400).json({
         success: false,
-        message: "Invalid batches format",
+        message: "Missing required trek fields"
       });
     }
 
-    try {
-      if (req.body.thingsToCarry) {
-        thingsToCarry = JSON.parse(req.body.thingsToCarry);
-      }
-    } catch (e) {
-      console.error("Error parsing thingsToCarry:", e);
+    if (!req.files?.coverImage?.length) {
       return res.status(400).json({
         success: false,
-        message: "Invalid thingsToCarry format",
+        message: "Cover image is required"
       });
     }
 
-    try {
-      if (req.body.importantNotes) {
-        importantNotes = JSON.parse(req.body.importantNotes);
-      }
-    } catch (e) {
-      console.error("Error parsing importantNotes:", e);
-      return res.status(400).json({
-        success: false,
-        message: "Invalid importantNotes format",
-      });
-    }
-
-    // Build trek object
-    const trek = {
-      name: req.body.name,
-      location: req.body.location,
-      difficulty: req.body.difficulty,
-      category: req.body.category,
-      fitnessLevel: req.body.fitnessLevel || null,
-      description: req.body.description || null,
-      highlights: highlights,
-      batches: batches,
-      thingsToCarry: thingsToCarry,
-      importantNotes: importantNotes,
-    };
-
-
-    // Validate required fields
-    if (!trek.name || !trek.location) {
-      return res.status(400).json({
-        success: false,
-        message: "Trek name and location are required",
-      });
-    }
-
-    // Validate cover image
-    if (
-      !req.files ||
-      !req.files.coverImage ||
-      req.files.coverImage.length === 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Cover image is required",
-      });
-    }
-
-    // Create trek in database
     const trekId = await trekModel.createTrek(trek, req.files);
+
+    const encryptedResponse = encrypt({
+      success: true,
+      message: "Trek created successfully",
+      trekId
+    });
 
     res.status(201).json({
       success: true,
-      message: "Trek created successfully",
-      trekId,
-      data: {
-        id: trekId,
-        name: trek.name,
-        location: trek.location,
-      },
+      data: encryptedResponse
     });
+
   } catch (err) {
     if (err.message === "DUPLICATE_TREK") {
       return res.status(409).json({
         success: false,
-        message: "Trek already exists",
+        data: encrypt({
+          success: false,
+          message: "Trek already exists"
+        })
       });
     }
 
-    console.error("Error creating trek:", err);
+    console.error("Create trek error:", err);
+
     res.status(500).json({
       success: false,
-      message: "Failed to create trek",
+      data: encrypt({
+        success: false,
+        message: "Failed to create trek"
+      })
+    });
+  }
+}
+
+
+async function updateTrek(req, res) {
+  try {
+    const trekId = Number(req.params.id);
+
+    // Validate trek ID
+    if (!trekId || isNaN(trekId)) {
+      const errorResponse = encrypt({
+        success: false,
+        message: "Invalid trek ID",
+      });
+      
+      return res.status(400).json({
+        success: false,
+        data: errorResponse,
+      });
+    }
+
+    // Validate request
+    if (!req.body || !req.body.encryptedPayload) {
+      const errorResponse = encrypt({
+        success: false,
+        message: "Missing trek data",
+      });
+      
+      return res.status(400).json({
+        success: false,
+        data: errorResponse,
+      });
+    }
+
+    // Decrypt the payload
+    let trekData;
+    try {
+      trekData = decrypt(req.body.encryptedPayload);
+    } catch (e) {
+      console.error("Error decrypting payload:", e);
+      
+      const errorResponse = encrypt({
+        success: false,
+        message: "Invalid encrypted payload",
+      });
+      
+      return res.status(400).json({
+        success: false,
+        data: errorResponse,
+      });
+    }
+
+    // Parse fields (already parsed from decrypted JSON)
+    const highlights = trekData.highlights || [];
+    const batches = trekData.batches || [];
+    const thingsToCarry = trekData.thingsToCarry || [];
+    const importantNotes = trekData.importantNotes || [];
+    const deletedGallery = trekData.deletedGallery || [];
+
+    // Build trek object
+    const trek = {
+      name: trekData.name,
+      location: trekData.location,
+      difficulty: trekData.difficulty,
+      category: trekData.category,
+      fitnessLevel: trekData.fitnessLevel || null,
+      description: trekData.description || null,
+      highlights: highlights,
+      batches: batches,
+      thingsToCarry: thingsToCarry,
+      importantNotes: importantNotes,
+      coverDeleted: trekData.coverDeleted === true || trekData.coverDeleted === 'true',
+      deletedGallery: deletedGallery,
+    };
+
+    // Update trek in database
+    await trekModel.updateTrek(trekId, trek, req.files);
+
+    // Prepare success response
+    const response = {
+      success: true,
+      message: "Trek updated successfully",
+    };
+
+    // Encrypt response
+    const encryptedResponse = encrypt(response);
+
+    res.status(200).json({
+      success: true,
+      data: encryptedResponse,
+    });
+
+  } catch (err) {
+    console.error("Error updating trek:", err);
+
+    let errorMessage = "Failed to update trek";
+    let statusCode = 500;
+
+    if (err.message === "BATCHES_HAVE_BOOKINGS") {
+      errorMessage = "Cannot update batches that have existing bookings. Please contact admin.";
+      statusCode = 409;
+    }
+
+    const errorResponse = encrypt({
+      success: false,
+      message: errorMessage,
       error: err.message,
+    });
+
+    res.status(statusCode).json({
+      success: false,
+      data: errorResponse,
     });
   }
 }
@@ -137,7 +189,10 @@ async function getAllTreks(req, res) {
   const conn = await db.getConnection();
 
   try {
-    const [rows] = await conn.query(`
+    /* =======================
+       1️⃣ Fetch all treks (summary)
+    ======================= */
+    const [treks] = await conn.query(`
       SELECT 
         t.id,
         t.name,
@@ -164,58 +219,78 @@ async function getAllTreks(req, res) {
         t.updated_at
       FROM treks t
       LEFT JOIN trek_batches b ON b.trek_id = t.id
-      GROUP BY t.id, t.name, t.location, t.category, t.difficulty, 
-               t.fitness_level, t.description, t.cover_image, 
-               t.created_at, t.updated_at
+      GROUP BY t.id
       ORDER BY t.created_at DESC
     `);
 
-    // Get highlights and batch details for each trek
-    for (const trek of rows) {
-      // Get highlights count
-      const [[{ highlight_count }]] = await conn.query(
-        "SELECT COUNT(*) as highlight_count FROM trek_highlights WHERE trek_id = ?",
-        [trek.id],
-      );
-      trek.highlight_count = highlight_count;
+    /* =======================
+       2️⃣ Fetch all batches
+    ======================= */
+    const [allBatches] = await conn.query(`
+      SELECT 
+        id,
+        trek_id,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate,
+        DATE_FORMAT(end_date, '%Y-%m-%d') AS endDate,
+        status,
+        price,
+        available_slots,
+        booked_slots,
+        duration,
+        (available_slots - booked_slots) AS remainingSlots
+      FROM trek_batches
+      ORDER BY start_date ASC
+    `);
 
-      // ✅ Get all batch dates for this trek
-      const [batches] = await conn.query(
-        `SELECT 
-          id,
-          DATE_FORMAT(start_date, '%Y-%m-%d') AS startDate,
-          DATE_FORMAT(end_date, '%Y-%m-%d') AS endDate,
-          status,
-          price,
-          available_slots,
-          booked_slots,
-          duration,
-          (available_slots - booked_slots) AS remainingSlots
-        FROM trek_batches 
-        WHERE trek_id = ?
-        ORDER BY start_date ASC`,
-        [trek.id]
-      );
-      trek.batches = batches;
+    // Group batches by trek_id
+    const batchMap = {};
+    for (const batch of allBatches) {
+      if (!batchMap[batch.trek_id]) {
+        batchMap[batch.trek_id] = [];
+      }
+      batchMap[batch.trek_id].push(batch);
+    }
 
-      // Format summary dates
+    /* =======================
+       3️⃣ Fetch highlight counts
+    ======================= */
+    const [highlights] = await conn.query(`
+      SELECT trek_id, COUNT(*) AS highlight_count
+      FROM trek_highlights
+      GROUP BY trek_id
+    `);
+
+    const highlightMap = {};
+    for (const h of highlights) {
+      highlightMap[h.trek_id] = h.highlight_count;
+    }
+
+    /* =======================
+       4️⃣ Attach everything
+    ======================= */
+    for (const trek of treks) {
+      trek.batches = batchMap[trek.id] || [];
+      trek.highlight_count = highlightMap[trek.id] || 0;
+
       trek.earliest_start_date = trek.earliest_start_date
         ? new Date(trek.earliest_start_date).toISOString().split("T")[0]
         : null;
-      
+
       trek.latest_end_date = trek.latest_end_date
         ? new Date(trek.latest_end_date).toISOString().split("T")[0]
         : null;
 
-      // Add availability status
-      trek.has_available_slots = (trek.total_remaining_slots || 0) > 0;
-      trek.has_batches = (trek.total_batches || 0) > 0;
+      trek.has_batches = trek.batches.length > 0;
+      trek.has_available_slots = trek.batches.some(
+        b => b.status === "active" && b.remainingSlots > 0
+      );
     }
 
-    // Get total trek count and active trek count
+    /* =======================
+       5️⃣ Trek counts
+    ======================= */
     const [[totalCount]] = await conn.query(`
-      SELECT COUNT(DISTINCT t.id) AS total_trek_count
-      FROM treks t
+      SELECT COUNT(*) AS total_trek_count FROM treks
     `);
 
     const [[activeCount]] = await conn.query(`
@@ -227,19 +302,29 @@ async function getAllTreks(req, res) {
         AND (b.available_slots - b.booked_slots) > 0
     `);
 
-    res.status(200).json({
-      success: true,
-      count: rows.length,
+    /* =======================
+       6️⃣ Response
+    ======================= */
+    const response = {
+      count: treks.length,
       totalTreks: totalCount.total_trek_count,
       activeTrekCount: activeCount.active_trek_count,
-      data: rows,
+      result: treks
+    };
+
+    const encryptedResponse = encrypt(response);
+
+    res.status(200).json({
+      success: true,
+      data: encryptedResponse
     });
+
   } catch (err) {
     console.error("Error fetching treks:", err);
     res.status(500).json({
       success: false,
       message: "Failed to fetch treks",
-      error: err.message,
+      error: err.message
     });
   } finally {
     conn.release();
@@ -335,14 +420,14 @@ async function getTrekById(req, res) {
       [batch.batchId],
     );
     batch.inclusions = inclusions.map((i) => i.inclusion);
-    
+
     // ✅ Get exclusions for this batch - USING batch.batchId to be safe
     const [exclusions] = await conn.query(
       "SELECT exclusion FROM batch_exclusions WHERE batch_id = ? ORDER BY id",
       [batch.batchId],
     );
     batch.exclusions = exclusions.map((e) => e.exclusion);
-    
+
     // ✅ Get itinerary days for this batch
     const [days] = await conn.query(
       "SELECT id, day_number AS dayNumber, title FROM itinerary_days WHERE batch_id = ? ORDER BY day_number",
@@ -368,10 +453,12 @@ async function getTrekById(req, res) {
 
     const response = trek;
 
+    const encryptedResponse = encrypt(response);
+
     // Send response
     res.status(200).json({
       success: true,
-      data: response
+      data: encryptedResponse
     });
 
   } catch (err) {
@@ -385,7 +472,6 @@ async function getTrekById(req, res) {
     conn.release();
   }
 }
-
 
 async function getTrekByIdToUpdate(req, res) {
   const trekId = req.params.id;
@@ -497,26 +583,30 @@ async function getTrekByIdToUpdate(req, res) {
       delete batch.id;
     }
 
+    response = {
+      id: trek.id,
+      name: trek.name,
+      location: trek.location,
+      category: trek.category,
+      difficulty: trek.difficulty,
+      fitnessLevel: trek.fitness_level,
+      description: trek.description,
+      coverImage: trek.cover_image,
+      highlights: highlights.map((h) => h.highlight),
+      thingsToCarry: thingsToCarry.map((t) => t.item),
+      importantNotes: importantNotes.map((n) => n.note),
+      batches: batches,
+      galleryImages: images.map((img) => img.image_url),
+      createdAt: trek.created_at,
+      updatedAt: trek.updated_at,
+    }
+
+    const encryptedResponse = encrypt(response);
+
     // Build response
     res.status(200).json({
       success: true,
-      data: {
-        id: trek.id,
-        name: trek.name,
-        location: trek.location,
-        category: trek.category,
-        difficulty: trek.difficulty,
-        fitnessLevel: trek.fitness_level,
-        description: trek.description,
-        coverImage: trek.cover_image,
-        highlights: highlights.map((h) => h.highlight),
-        thingsToCarry: thingsToCarry.map((t) => t.item),
-        importantNotes: importantNotes.map((n) => n.note),
-        batches: batches,
-        galleryImages: images.map((img) => img.image_url),
-        createdAt: trek.created_at,
-        updatedAt: trek.updated_at,
-      },
+      data: encryptedResponse,
     });
   } catch (err) {
     console.error("Error fetching trek:", err);
@@ -531,118 +621,9 @@ async function getTrekByIdToUpdate(req, res) {
   }
 }
 
-async function updateTrek(req, res) {
-  try {
-    const trekId = Number(req.params.id);
+async function getTreks(req, res) {
+  const conn = await db.getConnection();
 
-    // Validate trek ID
-    if (!trekId || isNaN(trekId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid trek ID",
-      });
-    }
-
-    if (!req.body) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing trek data",
-      });
-    }
-
-    // Parse JSON fields from FormData (same pattern as create)
-    let highlights = [];
-    let batches = [];
-    let thingsToCarry = [];
-    let importantNotes = [];
-    let deletedGallery = [];
-
-    // Safely parse each JSON field
-    try {
-      if (req.body.highlights) {
-        highlights = JSON.parse(req.body.highlights);
-      }
-    } catch (e) {
-      console.error('Error parsing highlights:', e);
-    }
-
-    try {
-      if (req.body.batches) {
-        batches = JSON.parse(req.body.batches);
-      }
-    } catch (e) {
-      console.error('Error parsing batches:', e);
-    }
-
-    try {
-      if (req.body.thingsToCarry) {
-        thingsToCarry = JSON.parse(req.body.thingsToCarry);
-      }
-    } catch (e) {
-      console.error('Error parsing thingsToCarry:', e);
-    }
-
-    try {
-      if (req.body.importantNotes) {
-        importantNotes = JSON.parse(req.body.importantNotes);
-      }
-    } catch (e) {
-      console.error('Error parsing importantNotes:', e);
-    }
-
-    try {
-      if (req.body.deletedGallery) {
-        deletedGallery = JSON.parse(req.body.deletedGallery);
-      }
-    } catch (e) {
-      console.error('Error parsing deletedGallery:', e);
-    }
-
-    // Build trek object
-    const trek = {
-      name: req.body.name,
-      location: req.body.location,
-      difficulty: req.body.difficulty,
-      category: req.body.category,
-      fitnessLevel: req.body.fitnessLevel || null,
-      description: req.body.description || null,
-      highlights: highlights,
-      batches: batches,
-      thingsToCarry: thingsToCarry,
-      importantNotes: importantNotes,
-      coverDeleted: req.body.coverDeleted === 'true' || req.body.coverDeleted === true,
-      deletedGallery: deletedGallery
-    };
-
-    await trekModel.updateTrek(trekId, trek, req.files);
-
-    res.status(200).json({
-      success: true,
-      message: "Trek updated successfully",
-    });
-
-  } catch (err) {
-    console.error('Error updating trek:', err);
-
-    if (err.message === 'BATCHES_HAVE_BOOKINGS') {
-      return res.status(409).json({
-        success: false,
-        message: "Cannot update batches that have existing bookings. Please contact admin.",
-        error: "BATCHES_HAVE_BOOKINGS"
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to update trek",
-      error: err.message
-    });
-  }
-}
-
-async function getTreks(req,res){
-    const conn = await db.getConnection();
-  
   try {
     const [treks] = await conn.execute(`
       SELECT 
@@ -651,15 +632,17 @@ async function getTreks(req,res){
         COUNT(DISTINCT b.id) as total_bookings,
         SUM(CASE WHEN tb.status = 'active' THEN 1 ELSE 0 END) as active_batches
       FROM treks t
-      LEFT JOIN trek_batches tb ON t.id = tb.trek_id
+      LEFT JOIN trek_batches tb ON t.id = tb.trek_id AND tb.status IN ('active','full','inactive')
       LEFT JOIN bookings b ON tb.id = b.batch_id AND b.booking_status IN ('pending', 'confirmed')
       GROUP BY t.id
       ORDER BY t.created_at DESC
     `);
 
+    const encryptedResponse = encrypt(treks);
+
     res.json({
       success: true,
-      treks: treks
+      data: encryptedResponse
     });
   } catch (error) {
     console.error('Get treks error:', error);
@@ -688,17 +671,20 @@ async function getBatchesById(req, res) {
         SUM(CASE WHEN b.booking_status = 'confirmed' THEN b.participants ELSE 0 END) as confirmed_participants,
         SUM(CASE WHEN b.booking_status = 'pending' THEN b.participants ELSE 0 END) as pending_participants
       FROM trek_batches tb
-      INNER JOIN treks t ON tb.trek_id = t.id
+      INNER JOIN treks t ON tb.trek_id = t.id AND tb.status IN ('active','full','inactive')
       LEFT JOIN bookings b ON tb.id = b.batch_id AND b.booking_status IN ('pending', 'confirmed')
       WHERE tb.trek_id = ?
       GROUP BY tb.id
       ORDER BY tb.start_date ASC
     `, [trekId]);
 
+    const encryptedResponse = encrypt(batches);
+
     res.json({
       success: true,
-      batches: batches
+      data: encryptedResponse
     });
+
   } catch (error) {
     console.error('Get batches error:', error);
     res.status(500).json({
@@ -711,9 +697,9 @@ async function getBatchesById(req, res) {
   }
 }
 
-async function getBookingsById(req,res) {
-    const conn = await db.getConnection();
-  
+async function getBookingsById(req, res) {
+  const conn = await db.getConnection();
+
   try {
     const { batchId } = req.params;
 
@@ -733,20 +719,42 @@ async function getBookingsById(req,res) {
       ORDER BY b.created_at DESC
     `, [batchId]);
 
-    // Get add-ons for each booking
+    // Get add-ons and participants for each booking
     for (let booking of bookings) {
+      // Get add-ons
       const [addons] = await conn.execute(`
         SELECT addon_name, quantity, unit_price, total_price
         FROM booking_addons
         WHERE booking_id = ?
       `, [booking.id]);
-      
+
       booking.addons = addons;
+
+      // Get participants
+      const [participants] = await conn.execute(`
+        SELECT 
+          id,
+          name,
+          age,
+          gender,
+          id_type,
+          id_number,
+          phone,
+          medical_info,
+          is_primary_contact
+        FROM booking_participants
+        WHERE booking_id = ?
+        ORDER BY is_primary_contact DESC, id ASC
+      `, [booking.id]);
+
+      booking.participants_details = participants;
     }
+
+    const encryptedResponse = encrypt(bookings);
 
     res.json({
       success: true,
-      bookings: bookings
+      data: encryptedResponse
     });
   } catch (error) {
     console.error('Get bookings error:', error);
@@ -760,9 +768,9 @@ async function getBookingsById(req,res) {
   }
 }
 
-async function stopBooking(req,res){
-    const conn = await db.getConnection();
-  
+async function stopBooking(req, res) {
+  const conn = await db.getConnection();
+
   try {
     const { batchId } = req.params;
 
@@ -811,9 +819,9 @@ async function stopBooking(req,res){
   }
 }
 
-async function resumeBooking(req,res){
-    const conn = await db.getConnection();
-  
+async function resumeBooking(req, res) {
+  const conn = await db.getConnection();
+
   try {
     const { batchId } = req.params;
 
@@ -860,9 +868,9 @@ async function resumeBooking(req,res){
   }
 }
 
-async function exportBookings(req,res){
-    const conn = await db.getConnection();
-  
+async function exportBookings(req, res) {
+  const conn = await db.getConnection();
+
   try {
     const { batchId } = req.params;
 
@@ -906,21 +914,42 @@ async function exportBookings(req,res){
       ORDER BY b.created_at DESC
     `, [batchId]);
 
-    // Get add-ons for each booking
+    // Get add-ons and participants for each booking
     for (let booking of bookings) {
+      // Get add-ons
       const [addons] = await conn.execute(`
         SELECT addon_name, quantity, unit_price, total_price
         FROM booking_addons
         WHERE booking_id = ?
       `, [booking.id]);
-      
-      booking.addons_list = addons.map(a => 
+
+      booking.addons_list = addons.map(a =>
         `${a.addon_name} (${a.quantity}x₹${a.unit_price})`
       ).join(', ');
+
+      // Get participants
+      const [participants] = await conn.execute(`
+        SELECT 
+          name,
+          age,
+          gender,
+          id_type,
+          id_number,
+          phone,
+          medical_info,
+          is_primary_contact
+        FROM booking_participants
+        WHERE booking_id = ?
+        ORDER BY is_primary_contact DESC, id ASC
+      `, [booking.id]);
+
+      booking.participants_details = participants;
     }
 
-    // Prepare data for Excel
-    const excelData = bookings.map(booking => ({
+    // ============================================
+    // SHEET 1: Bookings Summary
+    // ============================================
+    const bookingsData = bookings.map(booking => ({
       'Booking Reference': booking.booking_reference,
       'Booking Date': booking.booking_date,
       'Customer Name': booking.customer_name,
@@ -928,7 +957,6 @@ async function exportBookings(req,res){
       'Phone': booking.customer_phone,
       'Emergency Contact': booking.emergency_contact,
       'Participants': booking.participants,
-      'Base Amount': `₹${parseFloat(booking.total_amount - (booking.addons_list ? 0 : booking.total_amount)).toFixed(2)}`,
       'Add-ons': booking.addons_list || 'None',
       'Total Amount': `₹${parseFloat(booking.total_amount).toFixed(2)}`,
       'Amount Paid': `₹${parseFloat(booking.amount_paid).toFixed(2)}`,
@@ -938,14 +966,40 @@ async function exportBookings(req,res){
       'Special Requests': booking.special_requests || 'None'
     }));
 
-    // Create workbook
-    const worksheet = XLSX.utils.json_to_sheet(excelData);
-    const workbook = XLSX.utils.book_new();
-    
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Bookings');
+    // ============================================
+    // SHEET 2: All Participants
+    // ============================================
+    const participantsData = [];
 
-    // Set column widths for bookings sheet
-    const wscols = [
+    bookings.forEach(booking => {
+      if (booking.participants_details && booking.participants_details.length > 0) {
+        booking.participants_details.forEach((participant, index) => {
+          participantsData.push({
+            'Booking Reference': booking.booking_reference,
+            'Customer Name': booking.customer_name,
+            'Participant #': index + 1,
+            'Participant Name': participant.name,
+            'Age': participant.age || '-',
+            'Gender': participant.gender || '-',
+            'ID Type': participant.id_type || '-',
+            'ID Number': participant.id_number || '-',
+            'Phone': participant.phone || '-',
+            'Medical Info': participant.medical_info || 'None',
+            'Primary Contact': participant.is_primary_contact ? 'Yes' : 'No',
+            'Booking Status': booking.booking_status
+          });
+        });
+      }
+    });
+
+    // ============================================
+    // Create Excel Workbook
+    // ============================================
+    const workbook = XLSX.utils.book_new();
+
+    // Add Bookings sheet
+    const bookingsSheet = XLSX.utils.json_to_sheet(bookingsData);
+    bookingsSheet['!cols'] = [
       { wch: 20 }, // Booking Reference
       { wch: 20 }, // Booking Date
       { wch: 25 }, // Customer Name
@@ -953,7 +1007,6 @@ async function exportBookings(req,res){
       { wch: 15 }, // Phone
       { wch: 15 }, // Emergency Contact
       { wch: 12 }, // Participants
-      { wch: 15 }, // Base Amount
       { wch: 40 }, // Add-ons
       { wch: 15 }, // Total Amount
       { wch: 15 }, // Amount Paid
@@ -962,14 +1015,34 @@ async function exportBookings(req,res){
       { wch: 15 }, // Payment Status
       { wch: 50 }  // Special Requests
     ];
-    worksheet['!cols'] = wscols;
+    XLSX.utils.book_append_sheet(workbook, bookingsSheet, 'Bookings');
+
+    // Add Participants sheet
+    if (participantsData.length > 0) {
+      const participantsSheet = XLSX.utils.json_to_sheet(participantsData);
+      participantsSheet['!cols'] = [
+        { wch: 20 }, // Booking Reference
+        { wch: 25 }, // Customer Name
+        { wch: 12 }, // Participant #
+        { wch: 25 }, // Participant Name
+        { wch: 8 },  // Age
+        { wch: 10 }, // Gender
+        { wch: 20 }, // ID Type
+        { wch: 20 }, // ID Number
+        { wch: 15 }, // Phone
+        { wch: 40 }, // Medical Info
+        { wch: 15 }, // Primary Contact
+        { wch: 15 }  // Booking Status
+      ];
+      XLSX.utils.book_append_sheet(workbook, participantsSheet, 'All Participants');
+    }
 
     // Generate buffer
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     // Set response headers
     const fileName = `${batch.trek_name.replace(/\s+/g, '_')}_${new Date(batch.start_date).toISOString().split('T')[0]}_Bookings.xlsx`;
-    
+
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.send(buffer);
@@ -986,9 +1059,9 @@ async function exportBookings(req,res){
   }
 }
 
-async function exportallBookings(req,res){
-    const conn = await db.getConnection();
-  
+async function exportallBookings(req, res) {
+  const conn = await db.getConnection();
+
   try {
     const { trekId } = req.params;
 
@@ -1032,21 +1105,42 @@ async function exportallBookings(req,res){
       ORDER BY tb.start_date, b.created_at
     `, [trekId]);
 
-    // Get add-ons for each booking
+    // Get add-ons and participants for each booking
     for (let booking of bookings) {
+      // Get add-ons
       const [addons] = await conn.execute(`
         SELECT addon_name, quantity, unit_price
         FROM booking_addons
         WHERE booking_id = ?
       `, [booking.id]);
-      
-      booking.addons_list = addons.map(a => 
+
+      booking.addons_list = addons.map(a =>
         `${a.addon_name} (${a.quantity}x₹${a.unit_price})`
       ).join(', ');
+
+      // Get participants
+      const [participants] = await conn.execute(`
+        SELECT 
+          name,
+          age,
+          gender,
+          id_type,
+          id_number,
+          phone,
+          medical_info,
+          is_primary_contact
+        FROM booking_participants
+        WHERE booking_id = ?
+        ORDER BY is_primary_contact DESC, id ASC
+      `, [booking.id]);
+
+      booking.participants_details = participants;
     }
 
-    // Prepare Excel data
-    const excelData = bookings.map(booking => ({
+    // ============================================
+    // SHEET 1: Bookings Summary
+    // ============================================
+    const bookingsData = bookings.map(booking => ({
       'Batch Date': `${booking.batch_start_date} to ${booking.batch_end_date}`,
       'Booking Reference': booking.booking_reference,
       'Booking Date': booking.booking_date,
@@ -1064,14 +1158,125 @@ async function exportallBookings(req,res){
       'Special Requests': booking.special_requests || 'None'
     }));
 
-    const worksheet = XLSX.utils.json_to_sheet(excelData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'All Bookings');
+    // ============================================
+    // SHEET 2: All Participants (across all batches)
+    // ============================================
+    const participantsData = [];
 
+    bookings.forEach(booking => {
+      if (booking.participants_details && booking.participants_details.length > 0) {
+        booking.participants_details.forEach((participant, index) => {
+          participantsData.push({
+            'Batch Date': `${booking.batch_start_date} to ${booking.batch_end_date}`,
+            'Booking Reference': booking.booking_reference,
+            'Customer Name': booking.customer_name,
+            'Participant #': index + 1,
+            'Participant Name': participant.name,
+            'Age': participant.age || '-',
+            'Gender': participant.gender || '-',
+            'ID Type': participant.id_type || '-',
+            'ID Number': participant.id_number || '-',
+            'Phone': participant.phone || '-',
+            'Medical Info': participant.medical_info || 'None',
+            'Primary Contact': participant.is_primary_contact ? 'Yes' : 'No',
+            'Booking Status': booking.booking_status,
+            'Payment Status': booking.payment_status
+          });
+        });
+      }
+    });
+
+    // ============================================
+    // SHEET 3: Summary Statistics
+    // ============================================
+    const totalBookings = bookings.length;
+    const totalParticipants = participantsData.length;
+    const totalRevenue = bookings.reduce((sum, b) => sum + parseFloat(b.total_amount), 0);
+    const totalPaid = bookings.reduce((sum, b) => sum + parseFloat(b.amount_paid), 0);
+    const totalPending = bookings.reduce((sum, b) => sum + parseFloat(b.balance_due), 0);
+
+    const confirmedBookings = bookings.filter(b => b.booking_status === 'confirmed').length;
+    const pendingBookings = bookings.filter(b => b.booking_status === 'pending').length;
+    const cancelledBookings = bookings.filter(b => b.booking_status === 'cancelled').length;
+
+    const summaryData = [
+      { 'Metric': 'Trek Name', 'Value': trek.name },
+      { 'Metric': 'Total Bookings', 'Value': totalBookings },
+      { 'Metric': 'Total Participants', 'Value': totalParticipants },
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'Confirmed Bookings', 'Value': confirmedBookings },
+      { 'Metric': 'Pending Bookings', 'Value': pendingBookings },
+      { 'Metric': 'Cancelled Bookings', 'Value': cancelledBookings },
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'Total Revenue', 'Value': `₹${totalRevenue.toFixed(2)}` },
+      { 'Metric': 'Total Paid', 'Value': `₹${totalPaid.toFixed(2)}` },
+      { 'Metric': 'Total Pending', 'Value': `₹${totalPending.toFixed(2)}` },
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'Report Generated', 'Value': new Date().toLocaleString('en-IN') }
+    ];
+
+    // ============================================
+    // Create Excel Workbook
+    // ============================================
+    const workbook = XLSX.utils.book_new();
+
+    // Add Summary sheet (first)
+    const summarySheet = XLSX.utils.json_to_sheet(summaryData);
+    summarySheet['!cols'] = [
+      { wch: 25 }, // Metric
+      { wch: 30 }  // Value
+    ];
+    XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
+
+    // Add Bookings sheet
+    const bookingsSheet = XLSX.utils.json_to_sheet(bookingsData);
+    bookingsSheet['!cols'] = [
+      { wch: 25 }, // Batch Date
+      { wch: 20 }, // Booking Reference
+      { wch: 20 }, // Booking Date
+      { wch: 25 }, // Customer Name
+      { wch: 30 }, // Email
+      { wch: 15 }, // Phone
+      { wch: 15 }, // Emergency Contact
+      { wch: 12 }, // Participants
+      { wch: 40 }, // Add-ons
+      { wch: 15 }, // Total Amount
+      { wch: 15 }, // Amount Paid
+      { wch: 15 }, // Balance Due
+      { wch: 15 }, // Booking Status
+      { wch: 15 }, // Payment Status
+      { wch: 50 }  // Special Requests
+    ];
+    XLSX.utils.book_append_sheet(workbook, bookingsSheet, 'All Bookings');
+
+    // Add Participants sheet
+    if (participantsData.length > 0) {
+      const participantsSheet = XLSX.utils.json_to_sheet(participantsData);
+      participantsSheet['!cols'] = [
+        { wch: 25 }, // Batch Date
+        { wch: 20 }, // Booking Reference
+        { wch: 25 }, // Customer Name
+        { wch: 12 }, // Participant #
+        { wch: 25 }, // Participant Name
+        { wch: 8 },  // Age
+        { wch: 10 }, // Gender
+        { wch: 20 }, // ID Type
+        { wch: 20 }, // ID Number
+        { wch: 15 }, // Phone
+        { wch: 40 }, // Medical Info
+        { wch: 15 }, // Primary Contact
+        { wch: 15 }, // Booking Status
+        { wch: 15 }  // Payment Status
+      ];
+      XLSX.utils.book_append_sheet(workbook, participantsSheet, 'All Participants');
+    }
+
+    // Generate buffer
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
-    const fileName = `${trek.name.replace(/\s+/g, '_')}_All_Bookings.xlsx`;
-    
+    // Set response headers
+    const fileName = `${trek.name.replace(/\s+/g, '_')}_All_Bookings_${new Date().toISOString().split('T')[0]}.xlsx`;
+
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.send(buffer);
@@ -1090,10 +1295,10 @@ async function exportallBookings(req,res){
 
 module.exports = {
   createTrek,
+  updateTrek,
   getAllTreks,
   getTrekById,
   getTrekByIdToUpdate,
-  updateTrek,
   getTreks,
   getBatchesById,
   getBookingsById,
