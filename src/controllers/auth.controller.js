@@ -78,6 +78,12 @@ async function getDashboardData(req, res) {
     const [[revenue]] = await db.query(
       "SELECT SUM(total_amount) AS totalRevenue FROM bookings WHERE payment_status = 'paid' AND booking_status = 'confirmed'",
     );
+    const [[blogCount]] = await db.query(
+      "SELECT COUNT(id) AS totalpostsCount FROM posts",
+    );
+    const [[commentCount]] = await db.query(
+      "SELECT COUNT(id) AS totalCommentCount FROM comments",
+    );
 
     /* -------- RECENT BOOKINGS -------- */
     const [recentBookings] = await db.query(`
@@ -104,6 +110,8 @@ async function getDashboardData(req, res) {
       totalbookingCount: bookingCount.totalbookingCount,
       totalRevenue: revenue.totalRevenue,
       recentBookings,
+      totalBlog : blogCount.totalpostsCount,
+      totalComments: commentCount.totalCommentCount 
     }
       
     const encryptedResponse = encrypt(response);

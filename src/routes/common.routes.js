@@ -4,6 +4,7 @@ const user = require('../controllers/user.controller');
 const trek = require('../controllers/trek.controlller');
 const analytics = require('../controllers/analytics.controller');
 const booking = require('../controllers/booking.controller');
+const postEditorController = require('../controllers/postEditor.controller');
 const multer = require('multer');
 const path = require('path');
 
@@ -23,12 +24,15 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+const uploadPost = require('../middleware/uploadPost');
+
 /* ---------- AUTH ---------- */
 router.post('/login', auth.login);
 router.get('/dashData', auth.getDashboardData);
 
 /* ---------- USERS ---------- */
 router.get('/getUsers', user.getUsersData);
+router.get('/user/:userid/getUserById', user.getUserById);
 
 /* ---------- TREKS ---------- */
 router.post(
@@ -64,5 +68,20 @@ router.get('/revenue', analytics.getAllRevenueData)
 router.get('/bookingData', booking.getAllBookingData)
 router.get('/bookings/completion-stats',booking.updateCompletedBookings)
 router.put('/batches/:batchId/complete', booking.updateBatchCompleted)
+
+// Post routes
+router.get('/postEditor', postEditorController.getAllPosts);
+router.get('/postEditor/:id', postEditorController.getPostById);
+router.post(
+  '/postEditor',
+  uploadPost.single('image'),
+  postEditorController.createPost
+);
+router.post('/postEditor/:id', uploadPost.single('image'), postEditorController.updatePost);
+router.delete('/postEditor/:id', postEditorController.deletePost);
+
+// Categories route
+router.get('/categories', postEditorController.getCategories);
+router.get('/reviews', postEditorController.reviews);
 
 module.exports = router;
