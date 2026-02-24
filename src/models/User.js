@@ -1,5 +1,5 @@
 const db = require('../config/db');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 
 const findUser = async (email) => {
     try {
@@ -11,15 +11,19 @@ const findUser = async (email) => {
     }
 };
 
-
-// Validate password
+// Validate password using bcrypt compare
 async function validatePassword(password, hashedPassword) {
-    return password === hashedPassword;
+    try {
+        return await bcrypt.compare(password, hashedPassword);
+    } catch (err) {
+        console.error('Error validating password:', err);
+        return false;
+    }
 }
 
 async function saveToken(id, token) {
-  const query = `UPDATE admins SET token = ? WHERE id = ?`;
-  await db.execute(query, [token, id]);
+    const query = `UPDATE admins SET token = ? WHERE id = ?`;
+    await db.execute(query, [token, id]);
 }
 
 module.exports = { findUser, validatePassword, saveToken };

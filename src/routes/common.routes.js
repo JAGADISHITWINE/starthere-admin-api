@@ -28,6 +28,12 @@ const uploadPost = require('../middleware/uploadPost');
 
 /* ---------- AUTH ---------- */
 router.post('/login', auth.login);
+router.post('/logout', auth.logout);
+
+// All routes after this require authentication (cookie or Authorization header)
+const authMiddleware = require('../middleware/auth.middleware');
+router.use(authMiddleware);
+
 router.get('/dashData', auth.getDashboardData);
 
 /* ---------- USERS ---------- */

@@ -28,35 +28,63 @@ async function login(req, res) {
     }
 
     // 3. Generate JWT token
+    if (!process.env.JWT_SECRET) {
+      console.error('JWT_SECRET not set in environment');
+      return res.status(500).json({ response: false, message: 'Server misconfiguration' });
+    }
+
     const token = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-      },
+      { id: user.id, email: user.email },
       process.env.JWT_SECRET,
-      { expiresIn: "1d" },
+      { expiresIn: '1d' }
     );
 
     // 4. Save token to admins table
     await loginModel.saveToken(user.id, token); // <- make sure this function exists in your model
 
-    // 5. Send response
+    // 5. Set HttpOnly cookie and send minimal user info
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000, // 1 day
+    };
+
+    res.cookie('token', token, cookieOptions);
+
     return res.status(200).json({
       response: true,
-      message: "Login successful",
-      token: token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-      },
+      message: 'Login successful',
+      user: { id: user.id, name: user.name, email: user.email },
+      token
     });
   } catch (error) {
-    console.error("Login Error:", error);
-    return res.status(200).json({
-      response: false,
-      message: "Something went wrong. Please try again.",
-    });
+    console.error('Login Error:', error);
+    return res.status(500).json({ response: false, message: 'Internal server error' });
+  }
+}
+
+async function logout(req, res) {
+  try {
+    // Clear cookie and optionally remove token from DB
+    res.clearCookie('token');
+    // If client sends user id, you could clear token in DB as well. For now, just clear cookie.
+    return res.status(200).json({ response: true, message: 'Logged out' });
+  } catch (err) {
+    console.error('Logout error:', err);
+    return res.status(500).json({ response: false, message: 'Internal server error' });
+  }
+}
+
+async function me(req, res) {
+  try {
+    // Return user info from req.user (set by auth middleware)
+    if (!req.user) return res.status(401).json({ response: false, message: 'Unauthorized' });
+    // You may fetch fresh user details from DB if needed
+    return res.status(200).json({ response: true, user: req.user });
+  } catch (err) {
+    console.error('Profile error:', err);
+    return res.status(500).json({ response: false, message: 'Internal server error' });
   }
 }
 
@@ -113,7 +141,7 @@ async function getDashboardData(req, res) {
       totalBlog : blogCount.totalpostsCount,
       totalComments: commentCount.totalCommentCount 
     }
-      
+
     const encryptedResponse = encrypt(response);
 
     /* -------- RESPONSE -------- */
@@ -130,4 +158,4 @@ async function getDashboardData(req, res) {
   }
 }
 
-module.exports = { login, getDashboardData };
+module.exports = { login, logout, me, getDashboardData };

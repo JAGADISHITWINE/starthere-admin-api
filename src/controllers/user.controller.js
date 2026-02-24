@@ -35,10 +35,7 @@ async function getUsersData(req, res) {
         });
     } catch (err) {
         console.error("Error fetching data:", err);
-        res.status(200).json({
-            success: false,
-            message: "Failed to fetch user data",
-        });
+        return res.status(500).json({ success: false, message: 'Failed to fetch user data' });
     }
 }
 
@@ -107,10 +104,7 @@ async function getUserById(req, res) {
 
     } catch (error) {
         console.error("Get user error:", error);
-        return res.status(500).json({
-            response: false,
-            message: "Internal server error"
-        });
+        return res.status(500).json({ response: false, message: 'Internal server error' });
     }
 }
 
