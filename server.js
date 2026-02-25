@@ -35,7 +35,7 @@ app.use(
     },
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     exposedHeaders: ['Set-Cookie']
   })
 );
@@ -111,14 +111,27 @@ const io = new Server(server, {
 global.io = io;
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
   socket.on('join-admin-room', () => {
     socket.join('admin-room');
   });
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+  // Relay new booking events from internal producers (user API) to admin clients.
+  socket.on('booking-created', (payload = {}, ack) => {
+    const safePayload = {
+      bookingId: payload.bookingId ?? null,
+      bookingReference: payload.bookingReference ?? null,
+      customerName: payload.customerName ?? null,
+      trekName: payload.trekName ?? null,
+      participants: payload.participants ?? null,
+      totalAmount: payload.totalAmount ?? null,
+      createdAt: payload.createdAt || new Date().toISOString()
+    };
+
+    io.to('admin-room').emit('booking-created', safePayload);
+
+    if (typeof ack === 'function') {
+      ack({ success: true });
+    }
   });
 });
 
