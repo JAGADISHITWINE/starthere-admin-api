@@ -1,5 +1,72 @@
 const db = require("../config/db");
 const { encrypt, decrypt } = require("../service/cryptoHelper");
+const emailService = require("../service/email");
+
+async function getParticipantsByBookingIds(connection, bookingIds = []) {
+  if (!Array.isArray(bookingIds) || bookingIds.length === 0) return new Map();
+
+  const placeholders = bookingIds.map(() => "?").join(", ");
+  const [rows] = await connection.query(
+    `SELECT
+      booking_id,
+      name,
+      age,
+      gender,
+      phone,
+      medical_info
+     FROM booking_participants
+     WHERE booking_id IN (${placeholders})
+     ORDER BY booking_id ASC, id ASC`,
+    bookingIds
+  );
+
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row.booking_id)) map.set(row.booking_id, []);
+    map.get(row.booking_id).push({
+      name: row.name,
+      age: row.age,
+      gender: row.gender,
+      phone: row.phone,
+      medical_info: row.medical_info,
+    });
+  }
+
+  return map;
+}
+
+function queueCompletedBookingEmails(bookings = []) {
+  if (!Array.isArray(bookings) || bookings.length === 0) return;
+
+  (async () => {
+    const tasks = bookings.map((booking) =>
+      emailService.sendBookingCompletedEmail({
+        customerEmail: booking.customerEmail,
+        customerName: booking.customerName,
+        bookingReference: booking.bookingReference,
+        trekName: booking.trekName,
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+      })
+    );
+
+    const results = await Promise.allSettled(tasks);
+    const failures = results.filter((item) => item.status === "rejected");
+    if (failures.length > 0) {
+      console.error(`Failed to send ${failures.length} booking completion emails`);
+    }
+  })().catch((error) => {
+    console.error("Booking completion email queue error:", error);
+  });
+}
+
+function queueBatchCompletionSummaryEmail(payload = {}) {
+  (async () => {
+    await emailService.sendBatchCompletionSummaryEmail(payload);
+  })().catch((error) => {
+    console.error("Batch completion summary email queue error:", error);
+  });
+}
 
 async function getAllBookingData(req, res) {
   try {
@@ -48,7 +115,7 @@ async function updateCompletedBookings(req,res) {
   try {
     // Get bookings before update
     const [beforeUpdate] = await conn.execute(`
-      SELECT b.id, b.booking_reference, b.customer_name, b.trek_name
+      SELECT b.id, b.booking_reference, b.customer_name, b.customer_email, b.trek_name, tb.start_date, tb.end_date
       FROM bookings b
       INNER JOIN trek_batches tb ON b.batch_id = tb.id
       WHERE b.booking_status = 'confirmed'
@@ -68,6 +135,22 @@ async function updateCompletedBookings(req,res) {
     `);
 
     if (result.affectedRows > 0) {
+      const participantsMap = await getParticipantsByBookingIds(
+        conn,
+        beforeUpdate.map((booking) => booking.id)
+      );
+
+      queueCompletedBookingEmails(
+        beforeUpdate.map((booking) => ({
+          customerEmail: booking.customer_email,
+          customerName: booking.customer_name,
+          bookingReference: booking.booking_reference,
+          trekName: booking.trek_name,
+          startDate: booking.start_date,
+          endDate: booking.end_date,
+          participantsDetails: participantsMap.get(booking.id) || [],
+        }))
+      );
 
       // Emit real-time update to all connected admins
       if (global.io) {
@@ -83,13 +166,26 @@ async function updateCompletedBookings(req,res) {
       }
     }
 
-    const encryptedResponse = encrypt(result.affectedRows);
-    conn.release();
-    return encryptedResponse;
+    const responseData = {
+      updatedCount: result.affectedRows,
+      processedBookingIds: beforeUpdate.map((booking) => booking.id),
+      processedAt: new Date().toISOString()
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: responseData
+    });
     
   } catch (error) {
+    console.error('Update completed bookings error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update completed bookings',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
     if (conn) conn.release();
-    throw error;
   }
 }
 
@@ -170,8 +266,20 @@ async function updateBatchCompleted(req, res) {
       WHERE id = ?
     `;
     await connection.query(updateBatchQuery, [batchId]);
-    
+
     // 3. Update all confirmed bookings to 'completed'
+    const [bookingsToComplete] = await connection.query(
+      `SELECT 
+        id,
+        booking_reference,
+        customer_name,
+        customer_email
+      FROM bookings
+      WHERE batch_id = ?
+        AND booking_status = 'confirmed'`,
+      [batchId]
+    );
+
     const updateBookingsQuery = `
       UPDATE bookings 
       SET booking_status = 'completed', 
@@ -206,20 +314,44 @@ async function updateBatchCompleted(req, res) {
     // Commit transaction
     await connection.commit();
 
+    const participantsMap = await getParticipantsByBookingIds(
+      connection,
+      bookingsToComplete.map((booking) => booking.id)
+    );
 
-    data = {
+    queueCompletedBookingEmails(
+      bookingsToComplete.map((booking) => ({
+        customerEmail: booking.customer_email,
+        customerName: booking.customer_name,
+        bookingReference: booking.booking_reference,
+        trekName: batch.trek_name,
+        startDate: batch.start_date,
+        endDate: batch.end_date,
+        participantsDetails: participantsMap.get(booking.id) || [],
+      }))
+    );
+    queueBatchCompletionSummaryEmail({
+      batchId: batch.id,
+      trekName: batch.trek_name,
+      startDate: batch.start_date,
+      endDate: batch.end_date,
+      completedBookings: bookingResult.affectedRows,
+      completedParticipants: stats?.[0]?.completed_participants || 0,
+      processedAt: new Date().toISOString(),
+    });
+
+
+    const data = {
       updated_bookings: bookingResult.affectedRows,
       batch: updatedBatch[0],
       stats: stats[0]
     }
     
-    const encryptedResponse = encrypt(data);
-    
     // Send success response
     res.json({
       success: true,
       message: 'Batch marked as completed successfully',
-      response : encryptedResponse
+      ...data
     });
 
     

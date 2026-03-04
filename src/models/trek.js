@@ -1,10 +1,109 @@
 const db = require('../config/db');
 const { encrypt, decrypt } = require("../service/cryptoHelper");
+const ALLOWED_BATCH_STATUSES = new Set(['active', 'inactive', 'full', 'cancelled', 'completed']);
+
+function normalizeBatchStatus(rawStatus) {
+  const normalized = String(rawStatus || '').trim().toLowerCase();
+  if (!normalized) return 'active';
+  return ALLOWED_BATCH_STATUSES.has(normalized) ? normalized : 'active';
+}
+
+async function ensureCollectionColumn(conn) {
+  const [columns] = await conn.query(`SHOW COLUMNS FROM treks LIKE 'collection'`);
+  if (!Array.isArray(columns) || columns.length) {
+    return;
+  }
+
+  await conn.query(`
+    ALTER TABLE treks
+    ADD COLUMN collection VARCHAR(100) NULL AFTER category
+  `);
+}
+
+async function ensureCouponTable(conn) {
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS trek_coupons (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      trek_id INT NOT NULL,
+      code VARCHAR(60) NOT NULL,
+      discount_type ENUM('percentage', 'flat') NOT NULL DEFAULT 'percentage',
+      discount_value DECIMAL(10,2) NOT NULL,
+      min_booking_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      max_discount_amount DECIMAL(10,2) NULL,
+      start_date DATETIME NULL,
+      end_date DATETIME NULL,
+      usage_limit INT NULL,
+      usage_count INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_trek_coupon_code (trek_id, code),
+      KEY idx_trek_coupons_trek_id (trek_id)
+    )
+  `);
+}
+
+function normalizeCouponForInsert(rawCoupon = {}) {
+  if (!rawCoupon || rawCoupon.enabled !== true) return null;
+
+  const code = String(rawCoupon.code || '').trim().toUpperCase();
+  const discountType = String(rawCoupon.discountType || '').trim().toLowerCase();
+  const discountValue = Number(rawCoupon.discountValue);
+  const minBookingAmount = rawCoupon.minBookingAmount === '' || rawCoupon.minBookingAmount === undefined
+    ? 0
+    : Number(rawCoupon.minBookingAmount);
+  const maxDiscountAmount = rawCoupon.maxDiscountAmount === '' || rawCoupon.maxDiscountAmount === undefined
+    ? null
+    : Number(rawCoupon.maxDiscountAmount);
+  const usageLimit = rawCoupon.usageLimit === '' || rawCoupon.usageLimit === undefined
+    ? null
+    : Number(rawCoupon.usageLimit);
+  const startDate = rawCoupon.startDate || null;
+  const endDate = rawCoupon.endDate || null;
+  const isActive = rawCoupon.isActive === false ? 0 : 1;
+
+  if (!code || !discountType || !Number.isFinite(discountValue)) {
+    throw new Error("INVALID_COUPON_FIELDS");
+  }
+  if (!["percentage", "flat"].includes(discountType)) {
+    throw new Error("INVALID_COUPON_TYPE");
+  }
+  if (discountValue <= 0) {
+    throw new Error("INVALID_COUPON_VALUE");
+  }
+  if (discountType === "percentage" && discountValue > 100) {
+    throw new Error("INVALID_COUPON_PERCENT");
+  }
+  if (Number.isFinite(minBookingAmount) && minBookingAmount < 0) {
+    throw new Error("INVALID_COUPON_MIN_AMOUNT");
+  }
+  if (maxDiscountAmount !== null && (!Number.isFinite(maxDiscountAmount) || maxDiscountAmount < 0)) {
+    throw new Error("INVALID_COUPON_MAX_AMOUNT");
+  }
+  if (usageLimit !== null && (!Number.isFinite(usageLimit) || usageLimit < 0)) {
+    throw new Error("INVALID_COUPON_USAGE_LIMIT");
+  }
+
+  return {
+    code,
+    discountType,
+    discountValue,
+    minBookingAmount: Number.isFinite(minBookingAmount) ? minBookingAmount : 0,
+    maxDiscountAmount,
+    startDate,
+    endDate,
+    usageLimit,
+    isActive,
+  };
+}
 
 async function createTrek(trek, files) {
   const conn = await db.getConnection();
 
   try {
+    await ensureCollectionColumn(conn);
+    await ensureCouponTable(conn);
+
     // 🔁 Duplicate check
     const [[exists]] = await conn.query(
       `SELECT id FROM treks WHERE name = ? AND location = ?`,
@@ -20,14 +119,15 @@ async function createTrek(trek, files) {
     // 🏔️ Insert trek
     const [trekResult] = await conn.query(
       `INSERT INTO treks (
-        name, location, category, difficulty,
+        name, location, category, collection, difficulty,
         fitness_level, description, cover_image,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         trek.name,
         trek.location,
         trek.category,
+        trek.collection || null,
         trek.difficulty,
         trek.fitnessLevel || null,
         trek.description || null,
@@ -36,6 +136,7 @@ async function createTrek(trek, files) {
     );
 
     const trekId = trekResult.insertId;
+    const coupon = normalizeCouponForInsert(trek.coupon);
 
     // 🌟 Highlights
     if (Array.isArray(trek.highlights)) {
@@ -100,7 +201,7 @@ async function createTrek(trek, files) {
             batch.minParticipants || null,
             batch.maxParticipants || null,
             batch.duration || null,
-            batch.batchStatus || "active"
+            normalizeBatchStatus(batch.batchStatus)
           ]
         );
 
@@ -120,6 +221,27 @@ async function createTrek(trek, files) {
       }
     }
 
+    // 🎟️ Optional trek coupon
+    if (coupon) {
+      await conn.query(
+        `INSERT INTO trek_coupons
+        (trek_id, code, discount_type, discount_value, min_booking_amount, max_discount_amount, start_date, end_date, usage_limit, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          trekId,
+          coupon.code,
+          coupon.discountType,
+          coupon.discountValue,
+          coupon.minBookingAmount,
+          coupon.maxDiscountAmount,
+          coupon.startDate,
+          coupon.endDate,
+          coupon.usageLimit,
+          coupon.isActive,
+        ]
+      );
+    }
+
     await conn.commit();
     return trekId;
 
@@ -136,6 +258,7 @@ async function updateTrek(trekId, trek, files) {
   const conn = await db.getConnection();
 
   try {
+    await ensureCollectionColumn(conn);
     await conn.beginTransaction();
 
     // ========== UPDATE BASIC TREK INFO ==========
@@ -152,6 +275,7 @@ async function updateTrek(trekId, trek, files) {
         name = ?,
         location = ?,
         category = ?,
+        collection = ?,
         difficulty = ?,
         fitness_level = ?,
         description = ?,
@@ -162,6 +286,7 @@ async function updateTrek(trekId, trek, files) {
       trek.name,
       trek.location,
       trek.category,
+      trek.collection || null,
       trek.difficulty,
       trek.fitnessLevel,
       trek.description
@@ -225,6 +350,8 @@ async function updateTrek(trekId, trek, files) {
       [trekId]
     );
     const existingBatchIds = existingBatches.map(b => b.id);
+    const existingBatchIdSet = new Set(existingBatchIds);
+    const consumedExistingBatchIds = new Set();
 
     // Track which batches to keep
     const batchesToKeep = [];
@@ -232,10 +359,26 @@ async function updateTrek(trekId, trek, files) {
     if (Array.isArray(trek.batches) && trek.batches.length > 0) {
       for (let i = 0; i < trek.batches.length; i++) {
         const batch = trek.batches[i];
-        
-        if (i < existingBatchIds.length) {
+        let batchId = null;
+        const requestedBatchId = Number(batch.id);
+
+        if (
+          Number.isInteger(requestedBatchId) &&
+          existingBatchIdSet.has(requestedBatchId) &&
+          !consumedExistingBatchIds.has(requestedBatchId)
+        ) {
+          batchId = requestedBatchId;
+        } else if (
+          i < existingBatchIds.length &&
+          !consumedExistingBatchIds.has(existingBatchIds[i])
+        ) {
+          // Backward-compatible fallback if UI does not send batch.id
+          batchId = existingBatchIds[i];
+        }
+
+        if (batchId !== null) {
           // Update existing batch
-          const batchId = existingBatchIds[i];
+          consumedExistingBatchIds.add(batchId);
           batchesToKeep.push(batchId);
 
           await conn.query(
@@ -261,7 +404,7 @@ async function updateTrek(trekId, trek, files) {
               batch.minParticipants || null,
               batch.maxParticipants || null,
               batch.duration || null,
-              batch.batchStatus || 'active',
+              normalizeBatchStatus(batch.batchStatus),
               batchId
             ]
           );
@@ -410,7 +553,7 @@ async function insertBatch(conn, trekId, batch) {
       batch.minParticipants || null,
       batch.maxParticipants || null,
       batch.duration || null,
-      batch.batchStatus || 'active'
+      normalizeBatchStatus(batch.batchStatus)
     ]
   );
 

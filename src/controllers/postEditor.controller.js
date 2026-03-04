@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { generateSlug, formatDateForMySQL } = require('../utils/helpers');
+const { encrypt, decrypt } = require('../service/cryptoHelper');
 
 // Create new post
 exports.createPost = async (req, res) => {
@@ -271,21 +272,31 @@ exports.getAllPosts = async (req, res) => {
       SELECT 
         p.*,
         c.name as category_name,
+        COALESCE(a.name, u.full_name, 'Unknown') as author_name,
         GROUP_CONCAT(t.name) as tags
       FROM posts p
       LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN admins a ON p.author_type = 'admin' AND p.author_id = a.id
+      LEFT JOIN users u ON p.author_type = 'user' AND p.author_id = u.id
       LEFT JOIN post_tags pt ON p.id = pt.post_id
       LEFT JOIN tags t ON pt.tag_id = t.id
       GROUP BY p.id
       ORDER BY p.created_at DESC
     `);
 
+
     const postsWithTags = posts.map(post => ({
       ...post,
       tags: post.tags ? post.tags.split(',') : []
     }));
 
-    res.json(postsWithTags);
+    const encryptedResponse = encrypt(postsWithTags);
+
+    // Send response
+    res.status(200).json({
+      success: true,
+      data: encryptedResponse
+    });
   } catch (error) {
     console.error('Error fetching posts:', error);
     res.status(500).json({ error: 'Failed to fetch posts' });

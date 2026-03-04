@@ -2,7 +2,11 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const uploadDir = './uploads/treks';
+const sharedUploadsRoot = process.env.SHARED_UPLOADS_DIR
+  ? path.resolve(process.env.SHARED_UPLOADS_DIR)
+  : path.resolve(__dirname, '../../../shared-uploads');
+const uploadDir = path.join(sharedUploadsRoot, 'treks');
+
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }

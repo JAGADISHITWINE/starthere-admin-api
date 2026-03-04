@@ -2,6 +2,65 @@ const trekModel = require("../models/trek");
 const db = require("../config/db");
 const XLSX = require('xlsx');
 const { encrypt, decrypt } = require("../service/cryptoHelper");
+const emailService = require("../service/email");
+
+function normalizeCollectionValue(payload = {}) {
+  const raw =
+    payload.collection ??
+    payload.trekCollection ??
+    payload.collectionValue ??
+    payload.collectionType ??
+    null;
+
+  if (raw === null || raw === undefined) return null;
+
+  const value =
+    typeof raw === 'object'
+      ? raw.value ?? raw.label ?? null
+      : raw;
+
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function parseJsonField(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return fallback;
+  }
+}
+
+function queueBatchStatusEmails(bookings = [], batch = {}, batchStatus = "inactive") {
+  if (!Array.isArray(bookings) || bookings.length === 0) return;
+
+  (async () => {
+    const tasks = bookings.map((booking) =>
+      emailService.sendBatchStatusChangedEmail({
+        customerEmail: booking.customer_email,
+        customerName: booking.customer_name,
+        bookingReference: booking.booking_reference,
+        trekName: batch.trek_name,
+        startDate: batch.start_date,
+        endDate: batch.end_date,
+        batchStatus,
+      })
+    );
+
+    const results = await Promise.allSettled(tasks);
+    const failures = results.filter((item) => item.status === "rejected");
+    if (failures.length > 0) {
+      console.error(`Failed to send ${failures.length} batch status emails`);
+    }
+  })().catch((error) => {
+    console.error("Batch status email queue error:", error);
+  });
+}
 
 async function createTrek(req, res) {
   try {
@@ -21,6 +80,8 @@ async function createTrek(req, res) {
         message: "Invalid encrypted payload"
       });
     }
+
+    trek.collection = normalizeCollectionValue(trek);
 
     if (!trek.name || !trek.location || !trek.category || !trek.difficulty) {
       return res.status(400).json({
@@ -56,6 +117,15 @@ async function createTrek(req, res) {
         data: encrypt({
           success: false,
           message: "Trek already exists"
+        })
+      });
+    }
+    if (err.message && err.message.startsWith("INVALID_COUPON")) {
+      return res.status(400).json({
+        success: false,
+        data: encrypt({
+          success: false,
+          message: "Invalid coupon details for trek creation"
         })
       });
     }
@@ -122,16 +192,34 @@ async function updateTrek(req, res) {
     }
 
     // Parse fields (already parsed from decrypted JSON)
-    const highlights = trekData.highlights || [];
-    const batches = trekData.batches || [];
-    const thingsToCarry = trekData.thingsToCarry || [];
-    const importantNotes = trekData.importantNotes || [];
-    const deletedGallery = trekData.deletedGallery || [];
+    const highlightsParsed = parseJsonField(trekData.highlights, []);
+    const batchesParsed = parseJsonField(trekData.batches, []);
+    const thingsToCarryParsed = parseJsonField(trekData.thingsToCarry, []);
+    const importantNotesParsed = parseJsonField(trekData.importantNotes, []);
+    const deletedGalleryParsed = parseJsonField(trekData.deletedGallery, []);
+
+    const highlights = Array.isArray(highlightsParsed) ? highlightsParsed : [];
+    const batches = Array.isArray(batchesParsed) ? batchesParsed : [];
+    const thingsToCarry = Array.isArray(thingsToCarryParsed) ? thingsToCarryParsed : [];
+    const importantNotes = Array.isArray(importantNotesParsed) ? importantNotesParsed : [];
+    const deletedGallery = Array.isArray(deletedGalleryParsed) ? deletedGalleryParsed : [];
+
+    if (!Array.isArray(batchesParsed)) {
+      const errorResponse = encrypt({
+        success: false,
+        message: "Invalid batches payload",
+      });
+      return res.status(400).json({
+        success: false,
+        data: errorResponse,
+      });
+    }
 
     // Build trek object
     const trek = {
       name: trekData.name,
       location: trekData.location,
+      collection: normalizeCollectionValue(trekData),
       difficulty: trekData.difficulty,
       category: trekData.category,
       fitnessLevel: trekData.fitnessLevel || null,
@@ -198,6 +286,7 @@ async function getAllTreks(req, res) {
         t.name,
         t.location,
         t.category,
+        t.collection,
         t.difficulty,
         t.fitness_level,
         t.description,
@@ -531,6 +620,7 @@ async function getTrekByIdToUpdate(req, res) {
         status AS batchStatus
       FROM trek_batches
       WHERE trek_id = ?
+        AND LOWER(COALESCE(status, '')) <> 'completed'
       ORDER BY start_date ASC`,
       [trekId],
     );
@@ -588,6 +678,7 @@ async function getTrekByIdToUpdate(req, res) {
       name: trek.name,
       location: trek.location,
       category: trek.category,
+      collection: trek.collection,
       difficulty: trek.difficulty,
       fitnessLevel: trek.fitness_level,
       description: trek.description,
@@ -632,7 +723,7 @@ async function getTreks(req, res) {
         COUNT(DISTINCT b.id) as total_bookings,
         SUM(CASE WHEN tb.status = 'active' THEN 1 ELSE 0 END) as active_batches
       FROM treks t
-      LEFT JOIN trek_batches tb ON t.id = tb.trek_id AND tb.status IN ('active','full','inactive')
+      LEFT JOIN trek_batches tb ON t.id = tb.trek_id AND tb.status IN ('active','inactive')
       LEFT JOIN bookings b ON tb.id = b.batch_id AND b.booking_status IN ('pending', 'confirmed')
       GROUP BY t.id
       ORDER BY t.created_at DESC
@@ -671,7 +762,7 @@ async function getBatchesById(req, res) {
         SUM(CASE WHEN b.booking_status = 'confirmed' THEN b.participants ELSE 0 END) as confirmed_participants,
         SUM(CASE WHEN b.booking_status = 'pending' THEN b.participants ELSE 0 END) as pending_participants
       FROM trek_batches tb
-      INNER JOIN treks t ON tb.trek_id = t.id AND tb.status IN ('active','full','inactive')
+      INNER JOIN treks t ON tb.trek_id = t.id AND tb.status IN ('active','inactive')
       LEFT JOIN bookings b ON tb.id = b.batch_id AND b.booking_status IN ('pending', 'confirmed')
       WHERE tb.trek_id = ?
       GROUP BY tb.id
@@ -776,20 +867,33 @@ async function stopBooking(req, res) {
 
     await conn.beginTransaction();
 
-    // Update batch status to 'inactive' or 'full'
-    const [result] = await conn.execute(`
-      UPDATE trek_batches 
-      SET status = 'inactive'
-      WHERE id = ?
-    `, [batchId]);
+    const [[existingBatch]] = await conn.execute(
+      `SELECT id FROM trek_batches WHERE id = ?`,
+      [batchId]
+    );
 
-    if (result.affectedRows === 0) {
+    if (!existingBatch) {
       await conn.rollback();
       return res.status(404).json({
         success: false,
         message: 'Batch not found'
       });
     }
+
+    // Update batch status to 'inactive' or 'full'
+    await conn.execute(`
+      UPDATE trek_batches 
+      SET status = 'inactive'
+      WHERE id = ?
+    `, [batchId]);
+
+    const [bookings] = await conn.execute(`
+      SELECT booking_reference, customer_name, customer_email
+      FROM bookings
+      WHERE batch_id = ?
+        AND booking_status IN ('pending', 'confirmed')
+        AND customer_email IS NOT NULL
+    `, [batchId]);
 
     // Get batch details for response
     const [batch] = await conn.execute(`
@@ -800,6 +904,7 @@ async function stopBooking(req, res) {
     `, [batchId]);
 
     await conn.commit();
+    queueBatchStatusEmails(bookings, batch[0], "inactive");
 
     res.json({
       success: true,
@@ -827,19 +932,32 @@ async function resumeBooking(req, res) {
 
     await conn.beginTransaction();
 
-    const [result] = await conn.execute(`
-      UPDATE trek_batches 
-      SET status = 'active'
-      WHERE id = ?
-    `, [batchId]);
+    const [[existingBatch]] = await conn.execute(
+      `SELECT id FROM trek_batches WHERE id = ?`,
+      [batchId]
+    );
 
-    if (result.affectedRows === 0) {
+    if (!existingBatch) {
       await conn.rollback();
       return res.status(404).json({
         success: false,
         message: 'Batch not found'
       });
     }
+
+    await conn.execute(`
+      UPDATE trek_batches 
+      SET status = 'active'
+      WHERE id = ?
+    `, [batchId]);
+
+    const [bookings] = await conn.execute(`
+      SELECT booking_reference, customer_name, customer_email
+      FROM bookings
+      WHERE batch_id = ?
+        AND booking_status IN ('pending', 'confirmed')
+        AND customer_email IS NOT NULL
+    `, [batchId]);
 
     const [batch] = await conn.execute(`
       SELECT tb.*, t.name as trek_name
@@ -849,6 +967,7 @@ async function resumeBooking(req, res) {
     `, [batchId]);
 
     await conn.commit();
+    queueBatchStatusEmails(bookings, batch[0], "active");
 
     res.json({
       success: true,

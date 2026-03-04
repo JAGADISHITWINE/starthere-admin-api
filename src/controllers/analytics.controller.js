@@ -18,7 +18,7 @@ async function getAllRevenueData(req, res) {
             ) AS averageBookingValue
             FROM bookings
             WHERE payment_status = 'paid'
-            AND booking_status = 'confirmed';
+            AND booking_status IN ('confirmed','completed');
         `)
 
         /* ---------------- MONTHLY DATA ---------------- */
@@ -33,7 +33,7 @@ async function getAllRevenueData(req, res) {
             total_amount AS amount
         FROM bookings
         WHERE payment_status = 'paid'
-            AND booking_status = 'confirmed'
+            AND booking_status IN ('confirmed','completed')
         ) x
         GROUP BY month_start
         ORDER BY month_start;
@@ -47,7 +47,7 @@ async function getAllRevenueData(req, res) {
             COALESCE(SUM(total_amount), 0) AS revenue
             FROM bookings
             WHERE payment_status = 'paid'
-                AND booking_status = 'confirmed'
+                AND booking_status IN ('confirmed','completed')
             GROUP BY trek_name
             ORDER BY revenue DESC
             `);
@@ -57,7 +57,7 @@ async function getAllRevenueData(req, res) {
             SUM(total_amount) AS revenue
         FROM bookings
         WHERE payment_status = 'paid'
-            AND booking_status = 'confirmed'
+            AND booking_status IN ('confirmed','completed')
         GROUP BY DATE_FORMAT(created_at, '%Y-%m')
         ORDER BY month DESC
         LIMIT 2

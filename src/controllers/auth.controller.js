@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const loginModel = require("../models/User");
 const db = require("../config/db");
+const rbacService = require("../service/rbac.service");
 require("dotenv").config();
 const { encrypt, decrypt } = require("../service/cryptoHelper");
 
@@ -33,8 +34,16 @@ async function login(req, res) {
       return res.status(500).json({ response: false, message: 'Server misconfiguration' });
     }
 
+    const access = await rbacService.getRoleContextForAdmin(user.id);
+
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      {
+        id: user.id,
+        email: user.email,
+        role: access.roleKey,
+        roleName: access.roleName,
+        permissions: access.permissions,
+      },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -55,7 +64,14 @@ async function login(req, res) {
     return res.status(200).json({
       response: true,
       message: 'Login successful',
-      user: { id: user.id, name: user.name, email: user.email },
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: access.roleKey,
+        roleName: access.roleName,
+        permissions: access.permissions,
+      },
       token
     });
   } catch (error) {
@@ -80,8 +96,17 @@ async function me(req, res) {
   try {
     // Return user info from req.user (set by auth middleware)
     if (!req.user) return res.status(401).json({ response: false, message: 'Unauthorized' });
-    // You may fetch fresh user details from DB if needed
-    return res.status(200).json({ response: true, user: req.user });
+    const access = await rbacService.getRoleContextForAdmin(req.user.id);
+    return res.status(200).json({
+      response: true,
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        role: access.roleKey,
+        roleName: access.roleName,
+        permissions: access.permissions,
+      }
+    });
   } catch (err) {
     console.error('Profile error:', err);
     return res.status(500).json({ response: false, message: 'Internal server error' });
@@ -104,7 +129,7 @@ async function getDashboardData(req, res) {
       "SELECT COUNT(id) AS totalbookingCount FROM bookings",
     );
     const [[revenue]] = await db.query(
-      "SELECT SUM(total_amount) AS totalRevenue FROM bookings WHERE payment_status = 'paid' AND booking_status = 'confirmed'",
+      "SELECT SUM(total_amount) AS totalRevenue FROM bookings WHERE payment_status = 'paid' AND booking_status IN ('confirmed','completed')",
     );
     const [[blogCount]] = await db.query(
       "SELECT COUNT(id) AS totalpostsCount FROM posts",
