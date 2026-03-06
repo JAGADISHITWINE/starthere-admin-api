@@ -152,18 +152,6 @@ async function updateCompletedBookings(req,res) {
         }))
       );
 
-      // Emit real-time update to all connected admins
-      if (global.io) {
-        beforeUpdate.forEach(booking => {
-          global.io.to('admin-room').emit('booking-completed', {
-            bookingId: booking.id,
-            bookingReference: booking.booking_reference,
-            customerName: booking.customer_name,
-            trekName: booking.trek_name,
-            completedAt: new Date()
-          });
-        });
-      }
     }
 
     const responseData = {

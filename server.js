@@ -2,15 +2,12 @@ require('dotenv').config();
 
 const express = require('express');
 const app = express();
-const http = require('http');
-const server = http.createServer(app);
 
 const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
-const { Server } = require('socket.io');
 const rbacService = require('./src/service/rbac.service');
 const couponService = require('./src/service/coupon.service');
 
@@ -69,8 +66,7 @@ app.use(
 
         "connect-src": [
           "'self'",
-          "http://localhost:4001",
-          "ws://localhost:4001"
+          "http://localhost:4001"
         ],
 
         "script-src": [
@@ -126,46 +122,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 /* =================================
-   SOCKET.IO SETUP
-================================= */
-
-const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
-});
-
-// Make io globally accessible
-global.io = io;
-
-io.on('connection', (socket) => {
-  socket.on('join-admin-room', () => {
-    socket.join('admin-room');
-  });
-
-  // Relay new booking events from internal producers (user API) to admin clients.
-  socket.on('booking-created', (payload = {}, ack) => {
-    const safePayload = {
-      bookingId: payload.bookingId ?? null,
-      bookingReference: payload.bookingReference ?? null,
-      customerName: payload.customerName ?? null,
-      trekName: payload.trekName ?? null,
-      participants: payload.participants ?? null,
-      totalAmount: payload.totalAmount ?? null,
-      createdAt: payload.createdAt || new Date().toISOString()
-    };
-
-    io.to('admin-room').emit('booking-created', safePayload);
-
-    if (typeof ack === 'function') {
-      ack({ success: true });
-    }
-  });
-});
-
-/* =================================
    ROUTES
 ================================= */
 
@@ -191,7 +147,7 @@ app.use('/api/auth', (req, res, next) => {
 app.use('/api/auth', authRoutes);
 
 app.get('/', (req, res) => {
-  res.send('Server + Socket.IO running...');
+  res.send('Server running...');
 });
 
 /* =================================
@@ -216,6 +172,6 @@ couponService.ensureCouponSchema().catch((error) => {
   console.error('Coupon bootstrap error:', error);
 });
 
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
