@@ -5,7 +5,7 @@ require('dotenv').config();
 const dbHost = process.env.DB_HOST || '127.0.0.1';
 const dbUser = process.env.DB_USER || 'root';
 const dbPassword = process.env.DB_PASSWORD || '';
-const dbName = process.env.DB_NAME || 'starthere';
+const dbName = process.env.DB_NAME || 'goWILDKarunadu';
 const dbPort = process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306;
 const dbConnectTimeout = process.env.DB_CONNECT_TIMEOUT
     ? Number(process.env.DB_CONNECT_TIMEOUT)
